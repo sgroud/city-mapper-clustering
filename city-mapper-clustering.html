@@ -30,71 +30,74 @@
   </div>
   <div id="map"></div>
 
-  <script>
-    let map;
-    let geocoder;
-    let markers = [];
-    let clusterManager;
+  <script src="https://unpkg.com/@googlemaps/markerclusterer/dist/markerclusterer.umd.js"></script>
 
-    function initMap() {
-      map = new google.maps.Map(document.getElementById("map"), {
-        center: { lat: 20, lng: 0 },
-        zoom: 2,
-      });
-      geocoder = new google.maps.Geocoder();
+<script>
+  let map;
+  let geocoder;
+  let markers = [];
+  let clusterManager; // renamed from markerClusterer
+
+  function initMap() {
+    map = new google.maps.Map(document.getElementById("map"), {
+      center: { lat: 20, lng: 0 },
+      zoom: 2,
+    });
+    geocoder = new google.maps.Geocoder();
+  }
+
+  document.getElementById("loadBtn").addEventListener("click", () => {
+    const fileInput = document.getElementById("csvFile");
+    if (!fileInput.files.length) {
+      alert("Please select a CSV file first.");
+      return;
     }
 
-    document.getElementById("loadBtn").addEventListener("click", () => {
-      const fileInput = document.getElementById("csvFile");
-      if (!fileInput.files.length) {
-        alert("Please select a CSV file first.");
-        return;
-      }
+    // Clear old markers if user reloads CSV
+    if (clusterManager) {
+      clusterManager.clearMarkers();
+      markers = [];
+    }
 
-      // Clear old markers if user reloads CSV
-      if (clusterManager) {
-        clusterManager.clearMarkers();
-        markers = [];
-      }
+    Papa.parse(fileInput.files[0], {
+      header: true,
+      skipEmptyLines: true,
+      complete: async (results) => {
+        const rows = results.data;
+        document.getElementById("status").innerText = `Loaded ${rows.length} rows...`;
 
-      Papa.parse(fileInput.files[0], {
-        header: true,
-        skipEmptyLines: true,
-        complete: async (results) => {
-          const rows = results.data;
-          document.getElementById("status").innerText = `Loaded ${rows.length} rows...`;
+        for (const row of rows) {
+          const address = row["Address"]?.trim();
+          const city = row["City"]?.trim();
+          const zip = row["Zip Code"]?.trim();
+          const country = row["Country"]?.trim();
+          const lat = parseFloat(row["Latitude"]);
+          const lng = parseFloat(row["Longitude"]);
 
-          for (const row of rows) {
-            const address = row["Address"]?.trim();
-            const city = row["City"]?.trim();
-            const zip = row["Zip Code"]?.trim();
-            const country = row["Country"]?.trim();
-            const lat = parseFloat(row["Latitude"]);
-            const lng = parseFloat(row["Longitude"]);
+          if (!address && !city && !zip && !country) continue;
 
-            if (!address && !city && !zip && !country) continue;
-
-            if (!isNaN(lat) && !isNaN(lng)) {
-              addMarker(lat, lng, `${address || ""}, ${city || ""}`);
-              continue;
-            }
-
-            let fullAddress = "";
-            if (address) fullAddress += address + ", ";
-            if (city) fullAddress += city + ", ";
-            if (zip) fullAddress += zip + ", ";
-            if (country) fullAddress += country;
-
-            await geocodeLocation(fullAddress, `${address || ""}, ${city || ""}`);
+          if (!isNaN(lat) && !isNaN(lng)) {
+            addMarker(lat, lng, `${address || ""}, ${city || ""}`);
+            continue;
           }
 
-          // Create clusters after all markers are added
-          clusterManager = new markerClusterer.MarkerClusterer({ map, markers });
+          let fullAddress = "";
+          if (address) fullAddress += address + ", ";
+          if (city) fullAddress += city + ", ";
+          if (zip) fullAddress += zip + ", ";
+          if (country) fullAddress += country;
 
-          document.getElementById("status").innerText += " ✅ Mapping complete.";
-        },
-      });
+          await geocodeLocation(fullAddress, `${address || ""}, ${city || ""}`);
+        }
+
+        // Create clusters after all markers are added
+        clusterManager = new MarkerClusterer({ map, markers });
+
+        document.getElementById("status").innerText += " ✅ Mapping complete.";
+      },
     });
+  });
+
 
     async function geocodeLocation(locationString, label) {
       return new Promise((resolve) => {
