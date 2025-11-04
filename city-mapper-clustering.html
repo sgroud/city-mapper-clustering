@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>City Mapper (with Clustering)</title>
+
+  <!-- Google Maps JavaScript API -->
+  <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyCqdR-DJBX5mCsaw2yHbrLZqbeFZCW9jto&callback=initMap" async defer></script>
+
+  <!-- MarkerClusterer library -->
+  <script src="https://unpkg.com/@googlemaps/markerclusterer/dist/index.min.js"></script>
+
+  <!-- PapaParse for CSV parsing -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; padding: 0; }
+    #map { height: 90vh; width: 100%; }
+    #controls { padding: 10px; background: #f9f9f9; border-bottom: 1px solid #ddd; }
+    input[type="file"] { margin-right: 10px; }
+    #status { font-size: 0.9rem; color: #555; margin-top: 5px; }
+  </style>
+</head>
+<body>
+  <div id="controls">
+    <input type="file" id="csvFile" accept=".csv" />
+    <button id="loadBtn">Load CSV</button>
+    <p id="status"></p>
+  </div>
+  <div id="map"></div>
+
+  <script>
+    let map;
+    let geocoder;
+    let markers = [];
+    let markerClusterer;
+
+    function initMap() {
+      map = new google.maps.Map(document.getElementById("map"), {
+        center: { lat: 20, lng: 0 },
+        zoom: 2,
+      });
+      geocoder = new google.maps.Geocoder();
+    }
+
+    document.getElementById("loadBtn").addEventListener("click", () => {
+      const fileInput = document.getElementById("csvFile");
+      if (!fileInput.files.length) {
+        alert("Please select a CSV file first.");
+        return;
+      }
+
+      // Clear old markers if user reloads CSV
+      if (markerClusterer) {
+        markerClusterer.clearMarkers();
+        markers = [];
+      }
+
+      Papa.parse(fileInput.files[0], {
+        header: true,
+        skipEmptyLines: true,
+        complete: async (results) => {
+          const rows = results.data;
+          document.getElementById("status").innerText = `Loaded ${rows.length} rows...`;
+
+          for (const row of rows) {
+            const address = row["Address"]?.trim();
+            const city = row["City"]?.trim();
+            const zip = row["Zip Code"]?.trim();
+            const country = row["Country"]?.trim();
+            const lat = parseFloat(row["Latitude"]);
+            const lng = parseFloat(row["Longitude"]);
+
+            if (!address && !city && !zip && !country) continue;
+
+            if (!isNaN(lat) && !isNaN(lng)) {
+              addMarker(lat, lng, `${address || ""}, ${city || ""}`);
+              continue;
+            }
+
+            let fullAddress = "";
+            if (address) fullAddress += address + ", ";
+            if (city) fullAddress += city + ", ";
+            if (zip) fullAddress += zip + ", ";
+            if (country) fullAddress += country;
+
+            await geocodeLocation(fullAddress, `${address || ""}, ${city || ""}`);
+          }
+
+          // Create clusters after all markers are added
+          markerClusterer = new markerClusterer.MarkerClusterer({ map, markers });
+
+          document.getElementById("status").innerText += " ✅ Mapping complete.";
+        },
+      });
+    });
+
+    async function geocodeLocation(locationString, label) {
+      return new Promise((resolve) => {
+        geocoder.geocode({ address: locationString }, (results, status) => {
+          if (status === "OK" && results[0]) {
+            const loc = results[0].geometry.location;
+            addMarker(loc.lat(), loc.lng(), label);
+            resolve(loc);
+          } else {
+            console.warn(`Geocode failed for "${locationString}": ${status}`);
+            resolve(null);
+          }
+        });
+      });
+    }
+
+    function addMarker(lat, lng, label) {
+      const marker = new google.maps.Marker({
+        position: { lat, lng },
+        title: label,
+      });
+
+      const info = new google.maps.InfoWindow({
+        content: `<strong>${label}</strong><br>Lat: ${lat.toFixed(4)}, Lng: ${lng.toFixed(4)}`
+      });
+
+      marker.addListener("click", () => info.open(map, marker));
+      markers.push(marker);
+    }
+  </script>
+</body>
+</html>
