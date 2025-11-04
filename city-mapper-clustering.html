@@ -34,7 +34,7 @@
     let map;
     let geocoder;
     let markers = [];
-    let markerClusterer;
+    let clusterManager;
 
     function initMap() {
       map = new google.maps.Map(document.getElementById("map"), {
@@ -52,8 +52,8 @@
       }
 
       // Clear old markers if user reloads CSV
-      if (markerClusterer) {
-        markerClusterer.clearMarkers();
+      if (clusterManager) {
+        clusterManager.clearMarkers();
         markers = [];
       }
 
@@ -89,7 +89,7 @@
           }
 
           // Create clusters after all markers are added
-          markerClusterer = new markerClusterer.MarkerClusterer({ map, markers });
+          clusterManager = new markerClusterer.MarkerClusterer({ map, markers });
 
           document.getElementById("status").innerText += " ✅ Mapping complete.";
         },
