@@ -236,39 +236,62 @@
     });
 
     // === Find cycling clubs near the route ===
-    function findCyclingAssociations(path) {
-      if (!placesService) return;
-      document.getElementById("status").innerText = "Searching for cycling associations...";
+async function findCyclingAssociations(path) {
+  if (!google.maps.places.Place) {
+    console.error("Places API not loaded.");
+    return;
+  }
 
-      const step = Math.floor(path.length / 20) || 1; // sample every ~20th point
-      path.forEach((point, i) => {
-        if (i % step === 0) {
-          placesService.nearbySearch({
-            location: point,
-            radius: 5000, // 5 km
-            keyword: "cycling club",
-          }, (results, status) => {
-            if (status === google.maps.places.PlacesServiceStatus.OK) {
-              results.forEach(place => {
-                const marker = new google.maps.Marker({
-                  position: place.geometry.location,
-                  map: map,
-                  icon: "https://maps.google.com/mapfiles/ms/icons/green-dot.png",
-                  title: place.name
-                });
+  document.getElementById("status").innerText =
+    "Searching for cycling associations (new Places API)...";
 
-                const info = new google.maps.InfoWindow({
-                  content: `<strong>${place.name}</strong><br>${place.vicinity || ""}`
-                });
+  const step = Math.floor(path.length / 20) || 1; // sample every ~20th point
 
-                marker.addListener("click", () => info.open(map, marker));
-              });
-            }
+  for (let i = 0; i < path.length; i += step) {
+    const point = path[i];
+
+    try {
+      const request = {
+        locationRestriction: {
+          center: point,
+          radius: 5000 // meters
+        },
+        textQuery: "cycling club",
+        fields: ["displayName", "formattedAddress", "location", "websiteUri", "internationalPhoneNumber"]
+      };
+
+      const { places } = await google.maps.places.Place.searchNearby(request);
+
+      if (places && places.length) {
+        places.forEach(place => {
+          const marker = new google.maps.Marker({
+            position: place.location,
+            map,
+            icon: "https://maps.google.com/mapfiles/ms/icons/green-dot.png",
+            title: place.displayName
           });
-        }
-      });
 
-      document.getElementById("status").innerText = "Cycling associations added to map ✅";
+          const infoContent = `
+            <div style="font-size:14px;">
+              <strong>${place.displayName}</strong><br>
+              ${place.formattedAddress || ""}<br>
+              ${place.internationalPhoneNumber ? `<em>${place.internationalPhoneNumber}</em><br>` : ""}
+              ${place.websiteUri ? `<a href="${place.websiteUri}" target="_blank">Website</a>` : ""}
+            </div>
+          `;
+
+          const info = new google.maps.InfoWindow({ content: infoContent });
+          marker.addListener("click", () => info.open(map, marker));
+        });
+      }
+    } catch (err) {
+      console.warn("Places search failed:", err);
+    }
+  }
+
+  document.getElementById("status").innerText =
+    "Cycling associations added to map ✅";
+}
     }
   </script>
 </body>
