@@ -49,8 +49,10 @@
 <script>
 const $ = id => document.getElementById(id);
 const logEl = $('log');
-const csv = rows.map(r => r.map(c => '"' + String(c).replace(/"/g,'""') + '"').join(',')).join('\n');
-
+function log(...a){
+  logEl.textContent += a.join(' ') + '\n';
+  logEl.scrollTop = logEl.scrollHeight;
+}
 
 // GPX parsing
 function parseGPX(text){
@@ -174,8 +176,8 @@ $('start').onclick=async ()=>{
   }
 
   const rows=[["place","lat","lon"],...places.values()].map(r=>Array.isArray(r)?r:[r.place,r.lat,r.lon]);
-  const csv=rows.map(r=>r.map(c=>'"'+String(c).replace(/"/g,'""')+'"').join(',')).join('
-');
+  const csv = rows.map(r => r.map(c => '"' + String(c).replace(/"/g,'""') + '"').join(',')).join('\n');
+
   const blob=new Blob([csv],{type:'text/csv'});
   const url=URL.createObjectURL(blob);
 
