@@ -91,12 +91,27 @@ async function reverseGoogle(lat,lon,key){
   return fetch(url).then(r=>r.json());
 }
 function extractGooglePlace(j){
-  if(!j.results?.length) return null;
-  const c=j.results[0].address_components;
-  const get=t=>{const x=c.find(v=>v.types.includes(t));return x?x.long_name:null;};
-  return get('locality') || get('postal_town') || get('administrative_area_level_2') || get('administrative_area_level_1');
-}
+  if (!j.results?.length) return null;
 
+  const c = j.results[0].address_components;
+  const get = t => {
+    const x = c.find(v => v.types.includes(t));
+    return x ? x.long_name : null;
+  };
+
+  // Most reliable → least reliable
+  return (
+    get('locality') ||
+    get('postal_town') ||
+    get('sublocality') ||
+    get('neighborhood') ||
+    get('administrative_area_level_3') ||
+    get('administrative_area_level_2') ||
+    get('administrative_area_level_1') ||
+    get('country')
+  );
+}
+  
 // Map init
 let map, polyline, cluster;
 function initMap(){
@@ -155,7 +170,7 @@ $('start').onclick=async ()=>{
   log('Points:',pts.length);
   drawTrackAnimated(pts);
 
-  const simp=rdp(pts,0.0008);
+  const simp=rdp(pts,0.00015);
   log('Simplified:',simp.length);
 
   const places=new Map();
