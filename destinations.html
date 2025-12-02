@@ -3,7 +3,9 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>GPX → Places (Google + Map + Progress + Clusters)</title>
+  <title>GPX → Towns (OSM boundaries)</title>
+
+  <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
@@ -12,200 +14,281 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
   <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
 
+  <!-- osmtogeojson (convert Overpass JSON -> GeoJSON) -->
+  <script src="https://unpkg.com/osmtogeojson@3.0.0/osmtogeojson.js"></script>
+
+  <!-- turf for spatial ops -->
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6.5.0/turf.min.js"></script>
+
   <style>
-    body{font-family:system-ui;max-width:1000px;margin:24px auto;padding:0 16px;color:#111}
-    h1{font-size:22px;margin-bottom:8px}
-    textarea{width:100%;height:140px;font-family:monospace;margin-top:8px}
-    .controls{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
-    .log{background:#f7f7f8;padding:12px;border-radius:8px;border:1px solid #eee;white-space:pre-wrap;max-height:240px;overflow:auto}
-    #map{height:400px;margin-top:20px;border-radius:8px;border:1px solid #ccc}
-    #progress-container{width:100%;background:#eee;border-radius:8px;overflow:hidden;margin:12px 0;height:16px}
-    #progress{height:100%;width:0%;background:#4caf50;transition:width .25s}
+    body{font-family:system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial;max-width:1100px;margin:18px auto;padding:0 16px;color:#111}
+    h1{font-size:20px;margin-bottom:6px}
+    .controls{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0;align-items:center}
+    textarea{width:100%;height:120px;font-family:monospace;margin-top:8px}
+    #map{height:500px;border-radius:8px;border:1px solid #ccc;margin-top:12px}
+    .log{background:#f7f7f8;padding:12px;border-radius:8px;border:1px solid #eee;white-space:pre-wrap;max-height:220px;overflow:auto;margin-top:12px}
+    label.small{font-size:13px;color:#444}
+    #progress-container{width:100%;background:#eee;border-radius:8px;overflow:hidden;margin:12px 0;height:14px}
+    #progress{height:100%;width:0%;background:#4caf50;transition:width .2s}
+    .note{font-size:13px;color:#555}
+    .flex{display:flex;gap:8px}
   </style>
 </head>
 <body>
-  <h1>GPX → Cities / Towns / Villages (Google Geocoding + Map + Progress)</h1>
+  <h1>GPX → Towns/Villages using OSM Administrative Boundaries</h1>
+  <p class="note">This tool fetches OpenStreetMap administrative boundaries (via Overpass) for the GPX bounding box and performs point-in-polygon checks to determine which towns/villages the route crosses. No Google API needed. For large tracks or many requests, Overpass rate-limits may apply.</p>
 
   <div class="controls">
     <input id="gpxfile" type="file" accept=".gpx,.xml" />
-    <input id="apikey" type="text" placeholder="Google Maps API key" style="min-width:220px" />
-    <input id="delay" type="number" value="300" min="0" style="width:110px" />
-    <label for="delay">ms delay</label>
-    <button id="start">Process GPX</button>
+    <input id="geojsonfile" type="file" accept=".geojson,.json" />
+    <button id="start">Analyze GPX</button>
     <button id="download" disabled>Download CSV</button>
+    <div style="margin-left:auto" class="flex">
+      <label class="small">RDP tolerance (deg):</label>
+      <input id="tolerance" type="number" value="0.00015" step="0.00005" style="width:120px" />
+    </div>
   </div>
 
   <div id="progress-container"><div id="progress"></div></div>
 
-  <label><strong>Raw GPX (first 1000 chars)</strong></label>
+  <label class="small">Raw GPX (first 1k chars)</label>
   <textarea id="gpxpreview" readonly></textarea>
 
-  <h3>Map Preview</h3>
+  <h3>Map</h3>
   <div id="map"></div>
 
   <h3>Log</h3>
   <div id="log" class="log"></div>
 
 <script>
+// --- DOM helpers ---
 const $ = id => document.getElementById(id);
-const logEl = $('log');
-function log(...a){
-  logEl.textContent += a.join(' ') + '\n';
-  logEl.scrollTop = logEl.scrollHeight;
-}
+function log(...a){ $('log').textContent += a.join(' ') + '\n'; $('log').scrollTop = $('log').scrollHeight; }
 
-// GPX parsing
+// --- GPX parsing ---
 function parseGPX(text){
-  const xml=new DOMParser().parseFromString(text,'application/xml');
-  const pts=['trkpt','rtept','wpt'].flatMap(t=>Array.from(xml.querySelectorAll(t)));
-  return pts.map(el=>({lat:+el.getAttribute('lat'), lon:+el.getAttribute('lon')}));
+  const xml = new DOMParser().parseFromString(text, 'application/xml');
+  const trkpts = Array.from(xml.querySelectorAll('trkpt'));
+  const rtepts = Array.from(xml.querySelectorAll('rtept'));
+  const wpts = Array.from(xml.querySelectorAll('wpt'));
+  const all = trkpts.concat(rtepts).concat(wpts);
+  return all.map(el => ({lat: parseFloat(el.getAttribute('lat')), lon: parseFloat(el.getAttribute('lon'))}));
 }
 
-// RDP simplify
-function getDist(pt,a,b){
-  const dx=b.x-a.x, dy=b.y-a.y;
-  if(!dx&&!dy) return Math.hypot(pt.x-a.x, pt.y-a.y);
-  const t=((pt.x-a.x)*dx+(pt.y-a.y)*dy)/(dx*dx+dy*dy);
-  const px=a.x+t*dx, py=a.y+t*dy;
-  return Math.hypot(pt.x-px, pt.y-py);
+// --- Ramer–Douglas–Peucker ---
+function getPerpDistance(pt, a, b){
+  const x = pt.x, y = pt.y;
+  const x1 = a.x, y1 = a.y;
+  const x2 = b.x, y2 = b.y;
+  const dx = x2 - x1, dy = y2 - y1;
+  if(dx === 0 && dy === 0) return Math.hypot(x - x1, y - y1);
+  const t = ((x - x1) * dx + (y - y1) * dy) / (dx*dx + dy*dy);
+  const projx = x1 + t * dx, projy = y1 + t * dy;
+  return Math.hypot(x - projx, y - projy);
 }
-function rdp(p,eps){
-  if(p.length<3) return p;
-  const f=p[0], l=p[p.length-1];
-  let idx=-1, max=0;
-  for(let i=1;i<p.length-1;i++){
-    const d=getDist({x:p[i].lon,y:p[i].lat},{x:f.lon,y:f.lat},{x:l.lon,y:l.lat});
-    if(d>max){max=d;idx=i;}
+function rdp(points, epsilon){
+  if(points.length < 3) return points;
+  const first = {x: points[0].lon, y: points[0].lat};
+  const last = {x: points[points.length-1].lon, y: points[points.length-1].lat};
+  let index = -1, maxDist = 0;
+  for(let i=1;i<points.length-1;i++){
+    const d = getPerpDistance({x:points[i].lon,y:points[i].lat}, first, last);
+    if(d > maxDist){ index = i; maxDist = d; }
   }
-  if(max>eps){
-    const left=rdp(p.slice(0,idx+1),eps);
-    const right=rdp(p.slice(idx),eps);
-    return left.slice(0,-1).concat(right);
+  if(maxDist > epsilon){
+    const left = rdp(points.slice(0, index+1), epsilon);
+    const right = rdp(points.slice(index), epsilon);
+    return left.slice(0, -1).concat(right);
+  } else {
+    return [points[0], points[points.length-1]];
   }
-  return [f,l];
 }
 
-// Google reverse geocode
-async function reverseGoogle(lat,lon,key){
-  const url=`https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lon}&key=${key}`;
-  return fetch(url).then(r=>r.json());
-}
-function extractGooglePlace(j){
-  if (!j.results?.length) return null;
-
-  const c = j.results[0].address_components;
-  const get = t => {
-    const x = c.find(v => v.types.includes(t));
-    return x ? x.long_name : null;
-  };
-
-  // Most reliable → least reliable
-  return (
-    get('locality') ||
-    get('postal_town') ||
-    get('sublocality') ||
-    get('neighborhood') ||
-    get('administrative_area_level_3') ||
-    get('administrative_area_level_2') ||
-    get('administrative_area_level_1') ||
-    get('country')
-  );
-}
-  
-// Map init
-let map, polyline, cluster;
+// --- Map init ---
+let map, trackLayer, markerCluster, boundaryLayer;
 function initMap(){
   if(map) return;
-  map=L.map('map').setView([0,0],2);
+  map = L.map('map').setView([0,0],2);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);
-  cluster=L.markerClusterGroup();
-  map.addLayer(cluster);
+  markerCluster = L.markerClusterGroup();
+  map.addLayer(markerCluster);
+  trackLayer = L.layerGroup().addTo(map);
+  boundaryLayer = L.layerGroup().addTo(map);
 }
-function drawTrackAnimated(points){
-  if(polyline){polyline.remove();}
-  const latlngs=points.map(p=>[p.lat,p.lon]);
-  polyline=L.polyline([], {color:'blue'}).addTo(map);
-  map.fitBounds(L.latLngBounds(latlngs));
 
-  let i=0;
-  function step(){
-    if(i<latlngs.length){
-      polyline.addLatLng(latlngs[i]);
-      i++;
-      requestAnimationFrame(step);
+// --- Overpass query for administrative boundaries ---
+async function fetchBoundariesForBBox(bbox){
+  // bbox = [south, west, north, east]
+  const s=bbox[0], w=bbox[1], n=bbox[2], e=bbox[3];
+  // We ask for admin boundaries with admin_level 8 or 9 (commonly municipalities/towns). Adjust if needed.
+  const query = `[
+  out:json][timeout:25];
+  (
+    relation["boundary"="administrative"]["admin_level"~"8|9"](${s},${w},${n},${e});
+    way["boundary"="administrative"]["admin_level"~"8|9"](${s},${w},${n},${e});
+  );
+  out body geom;`;
+
+  const url = 'https://overpass-api.de/api/interpreter';
+  log('Requesting boundaries from Overpass for bbox', s.toFixed(5), w.toFixed(5), n.toFixed(5), e.toFixed(5));
+  const resp = await fetch(url, {method: 'POST', body: query, headers: {'Content-Type':'text/plain;charset=UTF-8'}});
+  if(!resp.ok) throw new Error('Overpass error: '+resp.status);
+  const data = await resp.json();
+  // convert to GeoJSON
+  const geojson = osmtogeojson(data);
+  return geojson;
+}
+
+// --- Utility: get bbox of points with padding ---
+function bboxFromPoints(points, padFrac=0.05){
+  let minLat=Infinity, minLon=Infinity, maxLat=-Infinity, maxLon=-Infinity;
+  points.forEach(p=>{ if(p.lat<minLat) minLat=p.lat; if(p.lat>maxLat) maxLat=p.lat; if(p.lon<minLon) minLon=p.lon; if(p.lon>maxLon) maxLon=p.lon; });
+  if(minLat===Infinity) return [0,0,0,0];
+  const latPad = (maxLat - minLat) * padFrac || 0.01;
+  const lonPad = (maxLon - minLon) * padFrac || 0.01;
+  return [minLat - latPad, minLon - lonPad, maxLat + latPad, maxLon + lonPad];
+}
+
+// --- Extract town name and postcode from a GeoJSON feature's properties ---
+function extractNameAndPostcode(props){
+  if(!props) return {name:null, postcode:null};
+  const name = props.name || props['ref'] || props['official_name'] || null;
+  // postal code tags may vary in OSM: 'postal_code', 'postcode', 'addr:postcode'
+  const postcode = props.postal_code || props.postcode || props['addr:postcode'] || null;
+  return {name, postcode};
+}
+
+// --- Point-in-polygon testing for all points ---
+function matchPointsToBoundaries(points, boundariesGeoJSON){
+  const towns = new Map();
+  if(!boundariesGeoJSON || !boundariesGeoJSON.features || !boundariesGeoJSON.features.length) return towns;
+  const features = boundariesGeoJSON.features;
+
+  // index features by bbox to speed up using turf
+  const indexed = features.map(f => ({feature:f, bbox: turf.bbox(f)}));
+
+  for(const pt of points){
+    const point = turf.point([pt.lon, pt.lat]);
+    for(const it of indexed){
+      const b = it.bbox; // [minX,minY,maxX,maxY]
+      if(pt.lon < b[0] || pt.lon > b[2] || pt.lat < b[1] || pt.lat > b[3]) continue; // skip
+      try{
+        if(turf.booleanPointInPolygon(point, it.feature)){
+          const {name, postcode} = extractNameAndPostcode(it.feature.properties || {});
+          const key = name || postcode || JSON.stringify(it.feature.properties || {});
+          if(!towns.has(key)) towns.set(key, {name, postcode, props: it.feature.properties, geom: it.feature.geometry});
+          break; // don't match multiple boundaries for the same point
+        }
+      }catch(e){ /* ignore geometry errors */ }
     }
   }
-  step();
+  return towns;
 }
 
-function drawTrack(points){
-  if(polyline){polyline.remove();}
-  polyline=L.polyline(points.map(p=>[p.lat,p.lon]),{color:'blue'}).addTo(map);
-  map.fitBounds(polyline.getBounds());
-}
-
-function updateProgress(i,total){
-  const pct=Math.round((i/total)*100);
-  $('progress').style.width=pct+'%';
-}
-
-$('start').onclick=async ()=>{
-  logEl.textContent='';
-  $('progress').style.width='0%';
+// --- Main handler ---
+$('start').onclick = async ()=>{
+  $('log').textContent = '';
+  $('progress').style.width = '0%';
   initMap();
-  cluster.clearLayers();
+  markerCluster.clearLayers();
+  boundaryLayer.clearLayers();
+  trackLayer.clearLayers();
 
-  const file=$('gpxfile').files[0];
-  if(!file){log('No file selected');return;}
-  const key=$('apikey').value.trim();
-  if(!key){log('Google API key required');return;}
-  const delay=+$('delay').value || 0;
+  const file = $('gpxfile').files[0];
+  const geojsonFile = $('geojsonfile').files[0];
+  if(!file){ log('Please choose a GPX file.'); return; }
 
-  const text=await file.text();
-  $('gpxpreview').value=text.slice(0,1000);
-  log('GPX loaded');
+  const text = await file.text();
+  $('gpxpreview').value = text.slice(0,1000);
 
-  const pts=parseGPX(text);
-  if(!pts.length){log('No points');return;}
-  log('Points:',pts.length);
-  drawTrackAnimated(pts);
+  const pts = parseGPX(text);
+  if(!pts.length){ log('No points found in GPX'); return; }
+  log('GPX points:', pts.length);
 
-  const simp=rdp(pts,0.00015);
-  log('Simplified:',simp.length);
+  // draw animated track
+  const tol = parseFloat($('tolerance').value) || 0.00015;
+  const simplified = rdp(pts, tol);
+  log('Simplified to', simplified.length, 'points (tolerance=' + tol + ')');
 
-  const places=new Map();
-  for(let i=0;i<simp.length;i++){
-    const {lat,lon}=simp[i];
-    log(`Geocoding ${i+1}/${simp.length}`);
+  // draw animated track on map
+  const latlngs = pts.map(p => [p.lat, p.lon]);
+  const animLine = L.polyline([], {color:'blue'}).addTo(trackLayer);
+  map.fitBounds(L.latLngBounds(latlngs));
+  (function animate(){
+    let i = 0;
+    function step(){
+      if(i < latlngs.length){ animLine.addLatLng(latlngs[i]); i++; requestAnimationFrame(step); }
+    }
+    step();
+  })();
+
+  // load boundaries either from uploaded geojson or Overpass
+  let boundariesGeo = null;
+  if(geojsonFile){
+    log('Loading user-provided GeoJSON boundaries...');
+    const gtxt = await geojsonFile.text();
+    try{ boundariesGeo = JSON.parse(gtxt); }
+    catch(e){ log('Invalid GeoJSON file'); }
+  }
+  if(!boundariesGeo){
     try{
-      const j=await reverseGoogle(lat,lon,key);
-      const p=extractGooglePlace(j);
-      if(p && !places.has(p)){
-        places.set(p,{place:p,lat,lon});
-        const m=L.marker([lat,lon]).bindPopup(p);
-        cluster.addLayer(m);
-      }
-    }catch(e){log('Error',e.message);}    
-    updateProgress(i+1,simp.length);
-    await new Promise(r=>setTimeout(r,delay));
+      const bbox = bboxFromPoints(pts, 0.08); // larger padding so boundaries around route are fetched
+      const overpassGeo = await fetchBoundariesForBBox(bbox);
+      boundariesGeo = overpassGeo;
+      log('Fetched', boundariesGeo.features.length, 'boundary features from Overpass');
+    }catch(e){ log('Error fetching boundaries:', e.message); }
   }
 
-  const rows=[["place","lat","lon"],...places.values()].map(r=>Array.isArray(r)?r:[r.place,r.lat,r.lon]);
-  const csv = rows.map(r => r.map(c => '"' + String(c).replace(/"/g,'""') + '"').join(',')).join('\n');
+  // visualize boundaries lightly
+  if(boundariesGeo && boundariesGeo.features && boundariesGeo.features.length){
+    const b = L.geoJSON(boundariesGeo, {style:{color:'#ff7800', weight:1, fill:false}});
+    b.addTo(boundaryLayer);
+  } else {
+    log('No boundary polygons available for this area. Results may be incomplete.');
+  }
 
-  const blob=new Blob([csv],{type:'text/csv'});
-  const url=URL.createObjectURL(blob);
+  // sample points to test against boundaries: use simplified points to reduce checks
+  const samplePoints = simplified.length ? simplified : pts;
+  log('Testing', samplePoints.length, 'sample points against boundaries');
 
-  const dl=$('download');
-  dl.disabled=false;
-  dl.onclick=()=>{
-    const a=document.createElement('a');
-    a.href=url;
-    a.download=file.name.replace(/\.gpx$/i,'')+'_places.csv';
-    a.click();
-  };
+  // chunk processing with progress
+  const chunkSize = 200;
+  const chunks = Math.ceil(samplePoints.length / chunkSize);
+  let allTowns = new Map();
+  for(let ci=0; ci<chunks; ci++){
+    const start = ci * chunkSize;
+    const end = Math.min(samplePoints.length, start + chunkSize);
+    const subset = samplePoints.slice(start, end);
+    const matched = matchPointsToBoundaries(subset, boundariesGeo);
+    // merge maps
+    for(const [k,v] of matched.entries()) if(!allTowns.has(k)) allTowns.set(k,v);
+    $('progress').style.width = Math.round(((ci+1)/chunks)*100) + '%';
+    await new Promise(r => setTimeout(r, 40)); // keep UI responsive
+  }
 
-  log('Done. Found '+places.size+' places.');
+  log('Found', allTowns.size, 'unique administrative areas (towns/villages)');
+
+  // place markers for matched towns
+  for(const [k,v] of allTowns.entries()){
+    const latlon = v.geom && v.geom.type === 'Point' ? [v.geom.coordinates[1], v.geom.coordinates[0]] : null;
+    const marker = latlon ? L.marker(latlon) : L.marker([ v.props?.centroid_lat || 0, v.props?.centroid_lon || 0 ]);
+    const popup = `<strong>${v.name || 'Unnamed'}</strong><br/>postcode: ${v.postcode || 'N/A'}`;
+    marker.bindPopup(popup);
+    markerCluster.addLayer(marker);
+  }
+
+  // prepare CSV
+  const rows = [['name','postcode','osm_properties']];
+  for(const v of allTowns.values()){
+    rows.push([v.name || '', v.postcode || '', JSON.stringify(v.props || {})]);
+  }
+  const csv = rows.map(r => r.map(c => '"'+String(c).replace(/"/g,'""')+'"').join(',')).join('\n');
+  const blob = new Blob([csv], {type:'text/csv'});
+  const url = URL.createObjectURL(blob);
+  const dl = $('download'); dl.disabled = false;
+  dl.onclick = ()=>{ const a=document.createElement('a'); a.href=url; a.download = (file.name.replace(/\.gpx$/i,'') || 'route') + '_towns.csv'; a.click(); };
+
+  log('Done. Click Download CSV.');
 };
 </script>
 </body>
