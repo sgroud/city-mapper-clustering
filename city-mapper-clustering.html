@@ -104,7 +104,10 @@ document.getElementById("loadCsvBtn").addEventListener("click", () => {
         const city = row["City"] || "";
         const zip = row["Zip Code"] || "";
         const country = row["Country"] || "";
-        const eventType = String(row["Event Type"] || "Other").trim();
+        const rawEvent = row["Event Type"];
+        const eventType = rawEvent !== undefined && rawEvent !== null
+          ? String(rawEvent).trim()
+          : "Other";
 
         eventTypes.add(eventType);
 
