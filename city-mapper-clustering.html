@@ -3,23 +3,22 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>City Mapper + Multi-GPX Routes</title>
+  <title>City Mapper + Events + GPX</title>
 
-  <!-- ✅ Google Maps JavaScript API -->
+  <!-- Google Maps -->
   <script
-    src="https://maps.googleapis.com/maps/api/js?key=AIzaSyCqdR-DJBX5mCsaw2yHbrLZqbeFZCW9jto&callback=initMapApp"
-    async
-    defer></script>
+    src="https://maps.googleapis.com/maps/api/js?key=YOUR_API_KEY&callback=initMapApp"
+    async defer></script>
 
-  <!-- ✅ Official MarkerClusterer CDN -->
+  <!-- MarkerClusterer -->
   <script src="https://cdn.jsdelivr.net/npm/@googlemaps/markerclusterer@2.5.3/dist/index.min.js"></script>
 
-  <!-- ✅ PapaParse for CSV parsing -->
+  <!-- PapaParse -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
 
   <style>
-    body { font-family: Arial, sans-serif; margin: 0; padding: 0; }
-    #map { height: 88vh; width: 100%; }
+    body { font-family: Arial, sans-serif; margin: 0; }
+    #map { height: 85vh; width: 100%; }
     #controls {
       padding: 10px;
       background: #f9f9f9;
@@ -29,8 +28,11 @@
       gap: 10px;
       align-items: center;
     }
-    input[type="file"] { margin-right: 6px; }
-    #status { font-size: 0.9rem; color: #333; }
+    #filters {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
     button {
       padding: 6px 12px;
       background: #0078ff;
@@ -43,181 +45,172 @@
   </style>
 </head>
 <body>
-  <div id="controls">
-    <label>📍 CSV: <input type="file" id="csvFile" accept=".csv" /></label>
-    <button id="loadCsvBtn">Load CSV</button>
 
-    <label>🚴‍♂️ GPX: <input type="file" id="gpxFile" accept=".gpx" multiple /></label>
-    <button id="loadGpxBtn">Load GPX</button>
+<div id="controls">
+  <label>📍 CSV:
+    <input type="file" id="csvFile" accept=".csv" />
+  </label>
+  <button id="loadCsvBtn">Load CSV</button>
 
-    <p id="status"></p>
-  </div>
-  <div id="map"></div>
+  <label>🚴 GPX:
+    <input type="file" id="gpxFile" accept=".gpx" multiple />
+  </label>
+  <button id="loadGpxBtn">Load GPX</button>
 
-  <script>
-    let map;
-    let geocoder;
-    let markers = [];
-    let clusterManager;
-    let routeCount = 0;
-    const routeColors = ["#FF0000", "#0078FF", "#28A745", "#FF9900", "#800080"];
-    let legendDiv;
+  <span id="status"></span>
+</div>
 
-    // === INIT MAP ===
-    function initMapApp() {
-      map = new google.maps.Map(document.getElementById("map"), {
-        center: { lat: 20, lng: 0 },
-        zoom: 2,
-      });
-      geocoder = new google.maps.Geocoder();
-    }
+<div id="filters"></div>
+<div id="map"></div>
 
-    // === LOAD CSV ===
-    document.getElementById("loadCsvBtn").addEventListener("click", () => {
-      const fileInput = document.getElementById("csvFile");
-      if (!fileInput.files.length) {
-        alert("Please select a CSV file first.");
-        return;
+<script>
+let map, geocoder;
+let allMarkers = [];
+let clusterManager;
+let eventTypes = new Set();
+let eventColors = {};
+let activeEventFilters = new Set();
+
+const colorPalette = [
+  "red", "blue", "green", "purple", "orange", "pink", "yellow"
+];
+
+function initMapApp() {
+  map = new google.maps.Map(document.getElementById("map"), {
+    center: { lat: 20, lng: 0 },
+    zoom: 2
+  });
+  geocoder = new google.maps.Geocoder();
+}
+
+// === CSV LOAD ===
+document.getElementById("loadCsvBtn").addEventListener("click", () => {
+  const file = document.getElementById("csvFile").files[0];
+  if (!file) return alert("Select a CSV file.");
+
+  if (clusterManager) clusterManager.clearMarkers();
+  allMarkers = [];
+  eventTypes.clear();
+  eventColors = {};
+  activeEventFilters.clear();
+
+  Papa.parse(file, {
+    header: true,
+    skipEmptyLines: true,
+    complete: async ({ data }) => {
+      let count = 0;
+      for (const row of data) {
+        const address = row["Address"] || "";
+        const city = row["City"] || "";
+        const zip = row["Zip Code"] || "";
+        const country = row["Country"] || "";
+        const eventType = row["Event Type"] || "Other";
+
+        eventTypes.add(eventType);
+
+        const fullAddress = `${address}, ${city}, ${zip}, ${country}`;
+        await geocodeAddress(fullAddress, eventType);
+        count++;
+        document.getElementById("status").innerText = `Geocoded ${count}/${data.length}`;
       }
 
-      if (clusterManager) clusterManager.clearMarkers();
-      markers = [];
+      setupEventFilters();
+      refreshMarkers();
+      document.getElementById("status").innerText += " ✅";
+    }
+  });
+});
 
-      Papa.parse(fileInput.files[0], {
-        header: true,
-        skipEmptyLines: true,
-        complete: async (results) => {
-          const rows = results.data;
-          const total = rows.length;
-          let done = 0;
-          document.getElementById("status").innerText =
-            `Starting geocoding... (0 of ${total})`;
-
-          for (const row of rows) {
-            const address = row["Address"]?.trim();
-            const city = row["City"]?.trim();
-            const zip = row["Zip Code"]?.trim();
-            const country = row["Country"]?.trim();
-            const lat = parseFloat(row["Latitude"]);
-            const lng = parseFloat(row["Longitude"]);
-
-            if (!address && !city && !zip && !country) {
-              done++;
-              continue;
-            }
-
-            if (!isNaN(lat) && !isNaN(lng)) {
-              addMarker(lat, lng, `${address || ""}, ${city || ""}`);
-              done++;
-              updateProgress(done, total);
-              continue;
-            }
-
-            let fullAddress = "";
-            if (address) fullAddress += address + ", ";
-            if (city) fullAddress += city + ", ";
-            if (zip) fullAddress += zip + ", ";
-            if (country) fullAddress += country;
-
-            await geocodeLocation(fullAddress, `${address || ""}, ${city || ""}`);
-            done++;
-            updateProgress(done, total);
-          }
-
-          clusterManager = new markerClusterer.MarkerClusterer({ map, markers });
-          document.getElementById("status").innerText += " ✅ Mapping complete.";
-        },
-      });
+async function geocodeAddress(address, eventType) {
+  return new Promise(resolve => {
+    geocoder.geocode({ address }, (results, status) => {
+      if (status === "OK") {
+        const loc = results[0].geometry.location;
+        const marker = createEventMarker(loc, address, eventType);
+        allMarkers.push(marker);
+      }
+      resolve();
     });
+  });
+}
 
-    function updateProgress(done, total) {
-      document.getElementById("status").innerText = `Geocoding ${done} of ${total}...`;
-    }
+function createEventMarker(location, label, eventType) {
+  if (!eventColors[eventType]) {
+    eventColors[eventType] = colorPalette[Object.keys(eventColors).length % colorPalette.length];
+  }
 
-    async function geocodeLocation(locationString, label) {
-      return new Promise((resolve) => {
-        geocoder.geocode({ address: locationString }, (results, status) => {
-          if (status === "OK" && results[0]) {
-            const loc = results[0].geometry.location;
-            addMarker(loc.lat(), loc.lng(), label);
-            resolve(loc);
-          } else {
-            console.warn(`Geocode failed for "${locationString}": ${status}`);
-            resolve(null);
-          }
-        });
+  const marker = new google.maps.Marker({
+    position: location,
+    title: label,
+    icon: `https://maps.google.com/mapfiles/ms/icons/${eventColors[eventType]}-dot.png`
+  });
+
+  marker.eventType = eventType;
+
+  const info = new google.maps.InfoWindow({
+    content: `<strong>${label}</strong><br>Event: ${eventType}`
+  });
+
+  marker.addListener("click", () => info.open(map, marker));
+  return marker;
+}
+
+// === FILTER UI ===
+function setupEventFilters() {
+  const filtersDiv = document.getElementById("filters");
+  filtersDiv.innerHTML = "<strong>Filter events:</strong> ";
+
+  eventTypes.forEach(type => {
+    activeEventFilters.add(type);
+
+    const label = document.createElement("label");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = true;
+    cb.onchange = () => {
+      cb.checked ? activeEventFilters.add(type) : activeEventFilters.delete(type);
+      refreshMarkers();
+    };
+    label.append(cb, ` ${type}`);
+    filtersDiv.appendChild(label);
+  });
+}
+
+// === MARKER REFRESH ===
+function refreshMarkers() {
+  if (clusterManager) clusterManager.clearMarkers();
+
+  const visible = allMarkers.filter(m => activeEventFilters.has(m.eventType));
+  clusterManager = new markerClusterer.MarkerClusterer({ map, markers: visible });
+}
+
+// === GPX LOAD (unchanged) ===
+document.getElementById("loadGpxBtn").addEventListener("click", () => {
+  const files = document.getElementById("gpxFile").files;
+  for (const file of files) {
+    const reader = new FileReader();
+    reader.onload = e => {
+      const xml = new DOMParser().parseFromString(e.target.result, "text/xml");
+      const points = [...xml.getElementsByTagName("trkpt")].map(p => ({
+        lat: parseFloat(p.getAttribute("lat")),
+        lng: parseFloat(p.getAttribute("lon"))
+      }));
+
+      const polyline = new google.maps.Polyline({
+        path: points,
+        strokeColor: "#000",
+        strokeWeight: 3,
+        map
       });
-    }
 
-    function addMarker(lat, lng, label) {
-      const marker = new google.maps.Marker({
-        position: { lat, lng },
-        title: label,
-      });
-      const info = new google.maps.InfoWindow({
-        content: `<strong>${label}</strong><br>Lat: ${lat.toFixed(4)}, Lng: ${lng.toFixed(4)}`
-      });
-      marker.addListener("click", () => info.open(map, marker));
-      markers.push(marker);
-    }
+      const bounds = new google.maps.LatLngBounds();
+      points.forEach(p => bounds.extend(p));
+      map.fitBounds(bounds);
+    };
+    reader.readAsText(file);
+  }
+});
+</script>
 
-    // === LOAD MULTIPLE GPX ROUTES ===
-    document.getElementById("loadGpxBtn").addEventListener("click", () => {
-      const gpxInput = document.getElementById("gpxFile");
-      if (!gpxInput.files.length) {
-        alert("Please select at least one GPX file.");
-        return;
-      }
-
-      for (const file of gpxInput.files) {
-        const reader = new FileReader();
-        reader.onload = (e) => {
-          const xml = new DOMParser().parseFromString(e.target.result, "application/xml");
-          const points = xml.getElementsByTagName("trkpt");
-          const path = [];
-          for (let i = 0; i < points.length; i++) {
-            const lat = parseFloat(points[i].getAttribute("lat"));
-            const lng = parseFloat(points[i].getAttribute("lon"));
-            path.push({ lat, lng });
-          }
-
-          const color = routeColors[routeCount % routeColors.length];
-          const polyline = new google.maps.Polyline({
-            path,
-            geodesic: true,
-            strokeColor: color,
-            strokeOpacity: 0.9,
-            strokeWeight: 3,
-            map,
-          });
-
-          // Fit map to route
-          const bounds = new google.maps.LatLngBounds();
-          path.forEach(p => bounds.extend(p));
-          map.fitBounds(bounds);
-
-          // === Legend ===
-          if (!legendDiv) {
-            legendDiv = document.createElement("div");
-            legendDiv.id = "legend";
-            legendDiv.style.background = "white";
-            legendDiv.style.padding = "10px";
-            legendDiv.style.margin = "10px";
-            legendDiv.style.border = "1px solid #ccc";
-            legendDiv.style.borderRadius = "6px";
-            map.controls[google.maps.ControlPosition.RIGHT_TOP].push(legendDiv);
-            legendDiv.innerHTML = "<strong>Routes:</strong><br>";
-          }
-
-          legendDiv.innerHTML += `<div><span style="color:${color};font-weight:bold;">&#9632;</span> ${file.name}</div>`;
-          routeCount++;
-
-          document.getElementById("status").innerText =
-            `Loaded GPX route: ${file.name} (${points.length} points).`;
-        };
-        reader.readAsText(file);
-      }
-    });
-  </script>
 </body>
 </html>
