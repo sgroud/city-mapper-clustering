@@ -104,7 +104,7 @@ document.getElementById("loadCsvBtn").addEventListener("click", () => {
         const city = row["City"] || "";
         const zip = row["Zip Code"] || "";
         const country = row["Country"] || "";
-        const eventType = row["Event Type"] || "Other";
+        const eventType = String(row["Event Type"] || "Other").trim();
 
         eventTypes.add(eventType);
 
